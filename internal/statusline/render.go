@@ -236,15 +236,27 @@ func renderWorkDir(p Payload, compact bool, st styler) string {
 	} else {
 		out = st.paint("dir ", ansiFgGray) + st.paint(name, ansiFgBrightBlue, ansiBold)
 	}
-	if p.VCS != nil && strings.TrimSpace(p.VCS.Branch) != "" {
-		branch := strings.TrimSpace(p.VCS.Branch)
-		if p.VCS.Dirty {
-			out += st.paint(" (", ansiFgGray) + st.paint(branch, ansiFgBrightRed) + st.paint("*", ansiFgBrightYel) + st.paint(")", ansiFgGray)
+	if branch := resolveBranch(p); branch != "" {
+		if p.VCS != nil && p.VCS.Dirty {
+			out += st.paint(" · ", ansiFgGray) + st.paint(branch, ansiFgBrightRed) + st.paint("*", ansiFgBrightYel)
 		} else {
-			out += st.paint(" (", ansiFgGray) + st.paint(branch, ansiFgCyan) + st.paint(")", ansiFgGray)
+			out += st.paint(" · ", ansiFgGray) + st.paint(branch, ansiFgCyan)
 		}
 	}
 	return out
+}
+
+func resolveBranch(p Payload) string {
+	if p.VCS == nil {
+		return ""
+	}
+	if branch := strings.TrimSpace(p.VCS.Branch); branch != "" {
+		return branch
+	}
+	if strings.EqualFold(strings.TrimSpace(p.VCS.Type), "git") {
+		return detectGitBranch(p.WorkDirPath())
+	}
+	return ""
 }
 
 func renderContext(p Payload, barWidth int, compact bool, st styler) string {

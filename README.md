@@ -4,7 +4,7 @@ A zero-dependency Go status line renderer for [Antigravity CLI (`agy`)](https://
 
 Displays:
 - **CLI status**: agent state indicator, `cycle_mode` (`default`, `plan`, `auto`, `accept-edits`), active model name, and effort level
-- **Working directory**: current workspace directory name (and VCS branch if provided)
+- **Working directory**: current workspace directory name, with Git branch (`<dir> · <branch>`) auto-detected from `.git/HEAD` when `vcs.type == "git"`
 - **Context usage**: short Unicode progress bar with usage percentage (traffic-light coloring; switches to bright magenta when `exceeds_200k_tokens` is `true`)
 - **Quota usage**: short Unicode progress bar with usage (or remaining) percentage and reset hint
 - **Artifacts**: displays `A <count>` when `artifact_count > 0`

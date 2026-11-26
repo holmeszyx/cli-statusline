@@ -94,6 +94,7 @@ func samplePayload() statusline.Payload {
 			},
 		},
 		AgentState:    "idle",
+		VCS:           &statusline.VCSInfo{Type: "git", Branch: "main"},
 		CycleMode:     "plan",
 		ArtifactCount: 2,
 		TerminalWidth: 120,

@@ -86,17 +86,21 @@ type QuotaEntry struct {
 	ResetInSeconds    int64
 }
 
-func (p Payload) WorkDirName() string {
-	raw := ""
+func (p Payload) WorkDirPath() string {
 	if p.Workspace != nil && strings.TrimSpace(p.Workspace.CurrentDir) != "" {
-		raw = p.Workspace.CurrentDir
-	} else if strings.TrimSpace(p.CWD) != "" {
-		raw = p.CWD
-	} else if p.Workspace != nil && strings.TrimSpace(p.Workspace.ProjectDir) != "" {
-		raw = p.Workspace.ProjectDir
+		return strings.TrimSpace(p.Workspace.CurrentDir)
 	}
+	if strings.TrimSpace(p.CWD) != "" {
+		return strings.TrimSpace(p.CWD)
+	}
+	if p.Workspace != nil && strings.TrimSpace(p.Workspace.ProjectDir) != "" {
+		return strings.TrimSpace(p.Workspace.ProjectDir)
+	}
+	return ""
+}
 
-	raw = strings.TrimSpace(raw)
+func (p Payload) WorkDirName() string {
+	raw := p.WorkDirPath()
 	if raw == "" {
 		return ""
 	}

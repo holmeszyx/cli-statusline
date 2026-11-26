@@ -2,6 +2,8 @@ package statusline
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -474,4 +476,106 @@ func TestRenderContextExceeds200kColor(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRenderGitBranchDetection(t *testing.T) {
+	t.Run("detects branch from .git/HEAD in parent dir", func(t *testing.T) {
+		root := t.TempDir()
+		repoDir := filepath.Join(root, "my-repo")
+		subDir := filepath.Join(repoDir, "cmd", "app")
+		if err := os.MkdirAll(filepath.Join(repoDir, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(subDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repoDir, ".git", "HEAD"), []byte("ref: refs/heads/feat/status-bar\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		p := Payload{
+			Workspace: &WorkspaceInfo{CurrentDir: subDir},
+			VCS:       &VCSInfo{Type: "git"},
+		}
+		got := Render(p, Options{Width: 120, NoColor: true})
+		if !strings.Contains(got, "dir app · feat/status-bar") {
+			t.Fatalf("Render() = %q, expected %q", got, "dir app · feat/status-bar")
+		}
+	})
+
+	t.Run("detects branch from worktree .git file", func(t *testing.T) {
+		root := t.TempDir()
+		wtDir := filepath.Join(root, "wt-repo")
+		gitMeta := filepath.Join(root, "meta", "worktrees", "wt1")
+		if err := os.MkdirAll(wtDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(gitMeta, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(wtDir, ".git"), []byte("gitdir: ../meta/worktrees/wt1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(gitMeta, "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		p := Payload{
+			Workspace: &WorkspaceInfo{CurrentDir: wtDir},
+			VCS:       &VCSInfo{Type: "git"},
+		}
+		got := Render(p, Options{Width: 120, NoColor: true})
+		if !strings.Contains(got, "dir wt-repo · main") {
+			t.Fatalf("Render() = %q, expected %q", got, "dir wt-repo · main")
+		}
+	})
+
+	t.Run("detached HEAD shows short hash", func(t *testing.T) {
+		repoDir := filepath.Join(t.TempDir(), "detached-repo")
+		if err := os.MkdirAll(filepath.Join(repoDir, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repoDir, ".git", "HEAD"), []byte("a1b2c3d4e5f60718293a4b5c6d7e8f9012345678\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		p := Payload{
+			Workspace: &WorkspaceInfo{CurrentDir: repoDir},
+			VCS:       &VCSInfo{Type: "git"},
+		}
+		got := Render(p, Options{Width: 120, NoColor: true})
+		if !strings.Contains(got, "dir detached-repo · a1b2c3d") {
+			t.Fatalf("Render() = %q, expected %q", got, "dir detached-repo · a1b2c3d")
+		}
+	})
+
+	t.Run("skips git detection when vcs is not git", func(t *testing.T) {
+		repoDir := filepath.Join(t.TempDir(), "non-git-vcs")
+		if err := os.MkdirAll(filepath.Join(repoDir, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repoDir, ".git", "HEAD"), []byte("ref: refs/heads/main\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		p := Payload{
+			Workspace: &WorkspaceInfo{CurrentDir: repoDir},
+			VCS:       &VCSInfo{Type: "jj"},
+		}
+		got := Render(p, Options{Width: 120, NoColor: true})
+		if strings.Contains(got, "· main") {
+			t.Fatalf("Render() = %q, should not detect git branch when vcs.type is jj", got)
+		}
+	})
+
+	t.Run("prefers explicit payload branch and formats with dot", func(t *testing.T) {
+		p := Payload{
+			Workspace: &WorkspaceInfo{CurrentDir: "/code/my-app"},
+			VCS:       &VCSInfo{Type: "git", Branch: "develop", Dirty: true},
+		}
+		got := Render(p, Options{Width: 120, NoColor: true})
+		if !strings.Contains(got, "dir my-app · develop*") {
+			t.Fatalf("Render() = %q, expected %q", got, "dir my-app · develop*")
+		}
+	})
 }
