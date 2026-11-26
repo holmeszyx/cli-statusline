@@ -2,6 +2,10 @@
 
 A zero-dependency Go status line renderer for [Antigravity CLI (`agy`)](https://antigravity.google/docs/cli/statusline/).
 
+![cli-statusline preview](images/preview-demo.jpg)
+
+![cli-statusline live preview in Antigravity CLI](images/preview-demo2.jpg)
+
 Displays:
 - **CLI status**: agent state indicator, `cycle_mode` (`default`, `plan`, `auto`, `accept-edits`), active model name, and effort level
 - **Working directory**: current workspace directory name, with Git branch (`<dir> · <branch>`) auto-detected from `.git/HEAD` when `vcs.type == "git"`
