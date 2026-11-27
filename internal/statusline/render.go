@@ -19,6 +19,7 @@ type Options struct {
 	BarWidth  int
 	NoColor   bool
 	QuotaMode QuotaDisplayMode
+	AllQuotas bool
 }
 
 const (
@@ -48,21 +49,25 @@ func Render(p Payload, opts Options) string {
 		if compactBar > narrowBarWidth {
 			compactBar = narrowBarWidth
 		}
-		return renderNarrow(p, compactBar, quotaMode, st)
+		return renderNarrow(p, compactBar, quotaMode, opts.AllQuotas, st)
 	}
 	if width > 0 && width < wideThreshold {
-		return renderMedium(p, barWidth, quotaMode, st)
+		return renderMedium(p, barWidth, quotaMode, opts.AllQuotas, st)
 	}
-	wide := renderWide(p, barWidth, quotaMode, st)
+	wide := renderWide(p, barWidth, quotaMode, opts.AllQuotas, st)
 	if width > 0 && VisibleWidth(wide) > width {
-		return renderMedium(p, barWidth, quotaMode, st)
+		return renderMedium(p, barWidth, quotaMode, opts.AllQuotas, st)
 	}
 	return wide
 }
 
-func renderWide(p Payload, barWidth int, quotaMode QuotaDisplayMode, st styler) string {
+func renderWide(p Payload, barWidth int, quotaMode QuotaDisplayMode, allQuotas bool, st styler) string {
 	sep := st.paint(" │ ", ansiFgGray)
 	parts := make([]string, 0, 5)
+	maxBuckets := 3
+	if allQuotas {
+		maxBuckets = 0
+	}
 
 	cliStatus := renderCLIStatus(p, false, st)
 	if cliStatus != "" {
@@ -74,7 +79,7 @@ func renderWide(p Payload, barWidth int, quotaMode QuotaDisplayMode, st styler) 
 	if ctx := renderContext(p, barWidth, false, st); ctx != "" {
 		parts = append(parts, ctx)
 	}
-	if quota := renderQuota(p, barWidth, quotaMode, false, 2, st); quota != "" {
+	if quota := renderQuota(p, barWidth, quotaMode, allQuotas, false, maxBuckets, st); quota != "" {
 		parts = append(parts, quota)
 	}
 	if artifacts := renderArtifacts(p, st); artifacts != "" {
@@ -83,9 +88,13 @@ func renderWide(p Payload, barWidth int, quotaMode QuotaDisplayMode, st styler) 
 	return strings.Join(parts, sep)
 }
 
-func renderMedium(p Payload, barWidth int, quotaMode QuotaDisplayMode, st styler) string {
+func renderMedium(p Payload, barWidth int, quotaMode QuotaDisplayMode, allQuotas bool, st styler) string {
 	dot := st.paint(" · ", ansiFgGray)
 	pipe := st.paint(" │ ", ansiFgGray)
+	maxBuckets := 3
+	if allQuotas {
+		maxBuckets = 0
+	}
 
 	line1Parts := make([]string, 0, 2)
 	if cliStatus := renderCLIStatus(p, false, st); cliStatus != "" {
@@ -99,7 +108,7 @@ func renderMedium(p Payload, barWidth int, quotaMode QuotaDisplayMode, st styler
 	if ctx := renderContext(p, barWidth, false, st); ctx != "" {
 		line2Parts = append(line2Parts, ctx)
 	}
-	if quota := renderQuota(p, barWidth, quotaMode, false, 2, st); quota != "" {
+	if quota := renderQuota(p, barWidth, quotaMode, allQuotas, false, maxBuckets, st); quota != "" {
 		line2Parts = append(line2Parts, quota)
 	}
 	if artifacts := renderArtifacts(p, st); artifacts != "" {
@@ -114,7 +123,7 @@ func renderMedium(p Payload, barWidth int, quotaMode QuotaDisplayMode, st styler
 	return top + "\n" + bottom
 }
 
-func renderNarrow(p Payload, barWidth int, quotaMode QuotaDisplayMode, st styler) string {
+func renderNarrow(p Payload, barWidth int, quotaMode QuotaDisplayMode, allQuotas bool, st styler) string {
 	dot := st.paint(" · ", ansiFgGray)
 
 	line1Parts := make([]string, 0, 2)
@@ -129,7 +138,7 @@ func renderNarrow(p Payload, barWidth int, quotaMode QuotaDisplayMode, st styler
 	if ctx := renderContext(p, barWidth, true, st); ctx != "" {
 		line2Parts = append(line2Parts, ctx)
 	}
-	if quota := renderQuota(p, barWidth, quotaMode, true, 1, st); quota != "" {
+	if quota := renderQuota(p, barWidth, quotaMode, allQuotas, true, 1, st); quota != "" {
 		line2Parts = append(line2Parts, quota)
 	}
 	if artifacts := renderArtifacts(p, st); artifacts != "" {
@@ -280,8 +289,13 @@ func renderArtifacts(p Payload, st styler) string {
 	return st.paint("A ", ansiFgGray) + st.paint(strconv.Itoa(p.ArtifactCount), ansiFgBrightCyan, ansiBold)
 }
 
-func renderQuota(p Payload, barWidth int, mode QuotaDisplayMode, compact bool, maxBuckets int, st styler) string {
-	entries := p.ActiveQuotas()
+func renderQuota(p Payload, barWidth int, mode QuotaDisplayMode, allQuotas bool, compact bool, maxBuckets int, st styler) string {
+	var entries []QuotaEntry
+	if allQuotas {
+		entries = p.ActiveQuotas()
+	} else {
+		entries = p.ModelQuotas()
+	}
 	if len(entries) == 0 {
 		return ""
 	}
@@ -290,11 +304,23 @@ func renderQuota(p Payload, barWidth int, mode QuotaDisplayMode, compact bool, m
 	}
 
 	multi := len(entries) > 1
+	labelCounts := make(map[string]int, len(entries))
+	if multi {
+		for _, e := range entries {
+			labelCounts[shortQuotaLabel(e.ID)]++
+		}
+	}
+
 	parts := make([]string, 0, len(entries))
 	for _, e := range entries {
 		label := "quota"
 		if multi {
-			label = shortQuotaLabel(e.ID)
+			short := shortQuotaLabel(e.ID)
+			if labelCounts[short] > 1 {
+				label = e.ID
+			} else {
+				label = short
+			}
 		}
 
 		if e.RemainingFraction != nil {
@@ -337,16 +363,17 @@ func formatPercent(pct float64, compact bool) string {
 }
 
 func shortQuotaLabel(id string) string {
-	lower := strings.ToLower(strings.TrimSpace(id))
-	switch {
-	case strings.Contains(lower, "5h"):
+	switch quotaOrderRank(id) {
+	case quotaRank5h:
 		return "5h"
-	case strings.Contains(lower, "week") || strings.Contains(lower, "7d"):
+	case quotaRankWeekly:
 		return "7d"
-	case strings.Contains(lower, "day") || strings.Contains(lower, "daily") || strings.Contains(lower, "24h"):
-		return "1d"
-	case strings.Contains(lower, "month") || strings.Contains(lower, "30d"):
+	case quotaRankMonthly:
 		return "30d"
+	}
+	lower := strings.ToLower(strings.TrimSpace(id))
+	if strings.Contains(lower, "day") || strings.Contains(lower, "daily") || strings.Contains(lower, "24h") {
+		return "1d"
 	}
 	trimmed := lower
 	for _, prefix := range []string{"gemini-", "gemini_", "claude-", "claude_", "rolling-", "rolling_"} {

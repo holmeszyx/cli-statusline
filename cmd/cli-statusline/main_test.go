@@ -40,6 +40,20 @@ func TestRun(t *testing.T) {
 			wantCode: 0,
 			wantSub:  "quota █████▓·· 72%",
 		},
+		{
+			name:     "filters to current model quota by default",
+			args:     []string{"-no-color", "-width", "160"},
+			stdin:    `{"cwd":"/tmp/app","model":{"display_name":"Gemini 4 Neon"},"quota":{"gemini-5h":{"remaining_fraction":0.8},"3p-5h":{"remaining_fraction":0.1}}}`,
+			wantCode: 0,
+			wantSub:  "quota █▒······ 20%",
+		},
+		{
+			name:     "all-quotas flag includes all series",
+			args:     []string{"-no-color", "-width", "160", "-all-quotas"},
+			stdin:    `{"cwd":"/tmp/app","model":{"display_name":"Gemini 4 Neon"},"quota":{"gemini-5h":{"remaining_fraction":0.8},"3p-5h":{"remaining_fraction":0.1}}}`,
+			wantCode: 0,
+			wantSub:  "3p-5h ███████· 90% · gemini-5h █▒······ 20%",
+		},
 	}
 
 	for _, tc := range tests {

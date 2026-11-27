@@ -4,6 +4,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 type Payload struct {
@@ -184,19 +185,193 @@ func (p Payload) ActiveQuotas() []QuotaEntry {
 		})
 	}
 	sort.Slice(entries, func(i, j int) bool {
-		fi, fj := entries[i].RemainingFraction, entries[j].RemainingFraction
-		if fi != nil && fj != nil {
-			if math.Abs(*fi-*fj) > 1e-9 {
-				return *fi < *fj
-			}
-		} else if fi != nil {
-			return true
-		} else if fj != nil {
-			return false
+		ri, rj := quotaOrderRank(entries[i].ID), quotaOrderRank(entries[j].ID)
+		if ri != rj {
+			return ri < rj
 		}
 		return entries[i].ID < entries[j].ID
 	})
 	return entries
+}
+
+const (
+	quotaRank5h      = 0
+	quotaRankWeekly  = 1
+	quotaRankMonthly = 2
+	quotaRankOther   = 3
+)
+
+func quotaOrderRank(id string) int {
+	lower := strings.ToLower(strings.TrimSpace(id))
+	switch {
+	case strings.Contains(lower, "5h") || strings.Contains(lower, "5_hour") || strings.Contains(lower, "5-hour") || strings.Contains(lower, "five_hour") || strings.Contains(lower, "five-hour"):
+		return quotaRank5h
+	case strings.Contains(lower, "week") || strings.Contains(lower, "7d"):
+		return quotaRankWeekly
+	case strings.Contains(lower, "month") || strings.Contains(lower, "30d"):
+		return quotaRankMonthly
+	default:
+		return quotaRankOther
+	}
+}
+
+var quotaWindowTokens = map[string]struct{}{
+	"5h": {}, "7d": {}, "30d": {}, "24h": {}, "1d": {},
+	"5hr": {}, "5hour": {}, "5": {}, "7": {}, "30": {}, "24": {},
+	"hour": {}, "hours": {}, "five": {}, "seven": {},
+	"day": {}, "days": {}, "daily": {},
+	"week": {}, "weeks": {}, "weekly": {},
+	"month": {}, "months": {}, "monthly": {},
+	"rolling": {}, "window": {}, "quota": {}, "limit": {}, "rate": {}, "session": {},
+}
+
+var knownQuotaProviders = map[string]string{
+	"gemini":    "gemini",
+	"google":    "gemini",
+	"claude":    "claude",
+	"anthropic": "claude",
+	"gpt":       "gpt",
+	"openai":    "gpt",
+	"codex":     "gpt",
+	"3p":        "3p",
+	"deepseek":  "deepseek",
+	"llama":     "llama",
+	"qwen":      "qwen",
+	"mistral":   "mistral",
+	"grok":      "grok",
+}
+
+func (p Payload) ModelQuotas() []QuotaEntry {
+	all := p.ActiveQuotas()
+	if len(all) == 0 {
+		return nil
+	}
+	modelProviders, modelTokens := p.modelSeriesTokens()
+	if len(modelTokens) == 0 {
+		return all
+	}
+
+	exact := make([]QuotaEntry, 0, len(all))
+	providerFallback := make([]QuotaEntry, 0, len(all))
+	hasExactScoped := false
+
+	for _, e := range all {
+		providers, qualifiers := classifyQuotaBucket(e.ID)
+		if len(providers) == 0 && len(qualifiers) == 0 {
+			exact = append(exact, e)
+			providerFallback = append(providerFallback, e)
+			continue
+		}
+
+		providerMatched := len(providers) == 0 || hasAnyToken(providers, modelProviders)
+		if !providerMatched {
+			continue
+		}
+
+		if len(providers) > 0 {
+			providerFallback = append(providerFallback, e)
+		}
+		if hasAllTokens(qualifiers, modelTokens) {
+			exact = append(exact, e)
+			hasExactScoped = true
+		}
+	}
+
+	if hasExactScoped {
+		return exact
+	}
+	if len(providerFallback) > 0 {
+		return providerFallback
+	}
+	return exact
+}
+
+func (p Payload) modelSeriesTokens() (map[string]bool, map[string]bool) {
+	if p.Model == nil {
+		return nil, nil
+	}
+	tokens := make(map[string]bool)
+	providers := make(map[string]bool)
+
+	for _, raw := range []string{p.Model.DisplayName, p.Model.ID} {
+		for _, tok := range tokenizeAlphaNum(raw) {
+			tokens[tok] = true
+			if prov, ok := knownQuotaProviders[tok]; ok {
+				providers[prov] = true
+				continue
+			}
+			switch tok {
+			case "sonnet", "opus", "haiku":
+				providers["claude"] = true
+			case "o1", "o3", "o4":
+				providers["gpt"] = true
+			}
+		}
+	}
+
+	if len(tokens) > 0 && !providers["gemini"] {
+		providers["3p"] = true
+	}
+	return providers, tokens
+}
+
+func classifyQuotaBucket(id string) ([]string, []string) {
+	tokens := tokenizeAlphaNum(id)
+	hasThird := false
+	hasParty := false
+	for _, tok := range tokens {
+		if tok == "third" {
+			hasThird = true
+		} else if tok == "party" {
+			hasParty = true
+		}
+	}
+	isThirdParty := hasThird && hasParty
+
+	var providers []string
+	var qualifiers []string
+	if isThirdParty {
+		providers = append(providers, "3p")
+	}
+
+	for _, tok := range tokens {
+		if isThirdParty && (tok == "third" || tok == "party") {
+			continue
+		}
+		if _, isWindow := quotaWindowTokens[tok]; isWindow {
+			continue
+		}
+		if prov, ok := knownQuotaProviders[tok]; ok {
+			providers = append(providers, prov)
+			continue
+		}
+		qualifiers = append(qualifiers, tok)
+	}
+	return providers, qualifiers
+}
+
+func tokenizeAlphaNum(s string) []string {
+	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+}
+
+func hasAnyToken(needles []string, haystack map[string]bool) bool {
+	for _, n := range needles {
+		if haystack[n] {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAllTokens(needles []string, haystack map[string]bool) bool {
+	for _, n := range needles {
+		if !haystack[n] {
+			return false
+		}
+	}
+	return true
 }
 
 func (p Payload) EffectiveCycleMode() string {

@@ -60,6 +60,7 @@ Add `statusLine` to `~/.gemini/antigravity-cli/settings.json`:
 | Flag | Default | Description |
 | --- | --- | --- |
 | `-quota-mode` | `used` | `used` (filled = consumed) or `remaining` (filled = left) |
+| `-all-quotas` | `false` | Show quotas for all model series instead of only the current model |
 | `-bar-width` | `8` | Character width of progress bars |
 | `-width` | `0` | Override terminal width (`0` uses `terminal_width` from JSON) |
 | `-no-color` | `false` | Disable ANSI color output (also respects `NO_COLOR`) |

@@ -25,12 +25,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		barWidth  int
 		noColor   bool
 		quotaMode string
+		allQuotas bool
 		demo      bool
 	)
 	fs.IntVar(&width, "width", 0, "override terminal width (0 uses payload terminal_width)")
 	fs.IntVar(&barWidth, "bar-width", 8, "progress bar character width")
 	fs.BoolVar(&noColor, "no-color", false, "disable ANSI colors (also respects NO_COLOR)")
 	fs.StringVar(&quotaMode, "quota-mode", "used", "quota display mode: used or remaining")
+	fs.BoolVar(&allQuotas, "all-quotas", false, "show quotas for all model series instead of only the current model")
 	fs.BoolVar(&demo, "demo", false, "render a sample payload for preview")
 
 	if err := fs.Parse(args); err != nil {
@@ -61,6 +63,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		BarWidth:  barWidth,
 		NoColor:   noColor,
 		QuotaMode: mode,
+		AllQuotas: allQuotas,
 	})
 	if out != "" {
 		_, _ = fmt.Fprintln(stdout, out)

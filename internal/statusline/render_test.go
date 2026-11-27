@@ -579,3 +579,370 @@ func TestRenderGitBranchDetection(t *testing.T) {
 		}
 	})
 }
+
+func TestActiveQuotasOrder(t *testing.T) {
+	tests := []struct {
+		name    string
+		quota   map[string]QuotaBucket
+		wantIDs []string
+	}{
+		{
+			name: "fixed order 5h weekly monthly regardless of remaining fraction",
+			quota: map[string]QuotaBucket{
+				"gemini-monthly": {RemainingFraction: floatPtr(0.05)},
+				"gemini-weekly":  {RemainingFraction: floatPtr(0.15)},
+				"rolling_5h":     {RemainingFraction: floatPtr(0.90)},
+			},
+			wantIDs: []string{"rolling_5h", "gemini-weekly", "gemini-monthly"},
+		},
+		{
+			name: "5h before weekly even when weekly has lower remaining",
+			quota: map[string]QuotaBucket{
+				"gemini-weekly": {RemainingFraction: floatPtr(0.10)},
+				"rolling_5h":    {RemainingFraction: floatPtr(0.85)},
+			},
+			wantIDs: []string{"rolling_5h", "gemini-weekly"},
+		},
+		{
+			name: "5h before monthly when weekly absent",
+			quota: map[string]QuotaBucket{
+				"monthly": {RemainingFraction: floatPtr(0.10)},
+				"5h":      {RemainingFraction: floatPtr(0.90)},
+			},
+			wantIDs: []string{"5h", "monthly"},
+		},
+		{
+			name: "weekly before monthly when 5h absent",
+			quota: map[string]QuotaBucket{
+				"30d": {RemainingFraction: floatPtr(0.10)},
+				"7d":  {RemainingFraction: floatPtr(0.80)},
+			},
+			wantIDs: []string{"7d", "30d"},
+		},
+		{
+			name: "alternate names and extra bucket after fixed buckets",
+			quota: map[string]QuotaBucket{
+				"custom-extra": {RemainingFraction: floatPtr(0.01)},
+				"30d":          {RemainingFraction: floatPtr(0.20)},
+				"7d":           {RemainingFraction: floatPtr(0.40)},
+				"five_hour":    {RemainingFraction: floatPtr(0.95)},
+			},
+			wantIDs: []string{"five_hour", "7d", "30d", "custom-extra"},
+		},
+		{
+			name: "amount-only bucket preserves fixed order",
+			quota: map[string]QuotaBucket{
+				"gemini-monthly": {RemainingFraction: floatPtr(0.10)},
+				"gemini-weekly":  {RemainingAmount: floatPtr(50)},
+				"rolling_5h":     {RemainingAmount: floatPtr(100)},
+			},
+			wantIDs: []string{"rolling_5h", "gemini-weekly", "gemini-monthly"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Payload{Quota: tc.quota}
+			got := p.ActiveQuotas()
+			if len(got) != len(tc.wantIDs) {
+				t.Fatalf("ActiveQuotas() len = %d, want %d (%v)", len(got), len(tc.wantIDs), got)
+			}
+			for i, wantID := range tc.wantIDs {
+				if got[i].ID != wantID {
+					t.Fatalf("ActiveQuotas()[%d].ID = %q, want %q (all=%v)", i, got[i].ID, wantID, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderQuotaFixedOrder(t *testing.T) {
+	allThree := Payload{
+		Workspace:     &WorkspaceInfo{CurrentDir: "/code/app"},
+		ContextWindow: &ContextWindowInfo{UsedPercentage: floatPtr(20)},
+		Quota: map[string]QuotaBucket{
+			"gemini-monthly": {
+				RemainingFraction: floatPtr(0.10),
+				ResetInSeconds:    int64Ptr(864000),
+			},
+			"gemini-weekly": {
+				RemainingFraction: floatPtr(0.50),
+				ResetInSeconds:    int64Ptr(172800),
+			},
+			"rolling_5h": {
+				RemainingFraction: floatPtr(0.90),
+				ResetInSeconds:    int64Ptr(7200),
+			},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		payload     Payload
+		width       int
+		wantOrdered []string
+		mustOmit    []string
+	}{
+		{
+			name:    "wide renders 5h weekly monthly in fixed order",
+			payload: allThree,
+			width:   160,
+			wantOrdered: []string{
+				"5h ▓······· 10% (2h)",
+				"7d ████···· 50% (2d)",
+				"30d ███████· 90% (10d)",
+			},
+		},
+		{
+			name:    "medium renders 5h weekly monthly in fixed order",
+			payload: allThree,
+			width:   80,
+			wantOrdered: []string{
+				"5h ▓······· 10% (2h)",
+				"7d ████···· 50% (2d)",
+				"30d ███████· 90% (10d)",
+			},
+		},
+		{
+			name:    "narrow keeps first bucket in fixed order (5h)",
+			payload: allThree,
+			width:   50,
+			wantOrdered: []string{
+				"quota ▒····· 10%",
+			},
+			mustOmit: []string{"7d", "30d"},
+		},
+		{
+			name: "wide without monthly keeps 5h before weekly even when weekly is higher usage",
+			payload: Payload{
+				Workspace:     &WorkspaceInfo{CurrentDir: "/code/app"},
+				ContextWindow: &ContextWindowInfo{UsedPercentage: floatPtr(20)},
+				Quota: map[string]QuotaBucket{
+					"gemini-weekly": {
+						RemainingFraction: floatPtr(0.05),
+						ResetInSeconds:    int64Ptr(172800),
+					},
+					"rolling_5h": {
+						RemainingFraction: floatPtr(0.95),
+						ResetInSeconds:    int64Ptr(7200),
+					},
+				},
+			},
+			width: 140,
+			wantOrdered: []string{
+				"5h ░······· 5% (2h)",
+				"7d ███████▒ 95% (2d)",
+			},
+			mustOmit: []string{"30d"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Render(tc.payload, Options{Width: tc.width, NoColor: true})
+			lastIdx := -1
+			for _, sub := range tc.wantOrdered {
+				idx := strings.Index(got, sub)
+				if idx == -1 {
+					t.Fatalf("Render() = %q, missing %q", got, sub)
+				}
+				if idx <= lastIdx {
+					t.Fatalf("Render() = %q, expected %q after previous segment (idx=%d, lastIdx=%d)", got, sub, idx, lastIdx)
+				}
+				lastIdx = idx
+			}
+			for _, sub := range tc.mustOmit {
+				if strings.Contains(got, sub) {
+					t.Fatalf("Render() = %q, should not contain %q", got, sub)
+				}
+			}
+		})
+	}
+}
+
+func TestModelQuotas(t *testing.T) {
+	tests := []struct {
+		name    string
+		model   *ModelInfo
+		quota   map[string]QuotaBucket
+		wantIDs []string
+	}{
+		{
+			name:  "gemini neon selects only gemini series over 3p and claude",
+			model: &ModelInfo{ID: "Gemini 4 Neon (High)", DisplayName: "Gemini 4 Neon (High)"},
+			quota: map[string]QuotaBucket{
+				"gemini-5h":     {RemainingFraction: floatPtr(0.80)},
+				"gemini-weekly": {RemainingFraction: floatPtr(0.60)},
+				"3p-5h":         {RemainingFraction: floatPtr(0.20)},
+				"3p-weekly":     {RemainingFraction: floatPtr(0.10)},
+				"claude-5h":     {RemainingFraction: floatPtr(0.30)},
+			},
+			wantIDs: []string{"gemini-5h", "gemini-weekly"},
+		},
+		{
+			name:  "gemini neon keeps gemini 5h weekly monthly in fixed order",
+			model: &ModelInfo{DisplayName: "Gemini 4 Neon"},
+			quota: map[string]QuotaBucket{
+				"gemini-monthly": {RemainingFraction: floatPtr(0.90)},
+				"gemini-weekly":  {RemainingFraction: floatPtr(0.70)},
+				"gemini-5h":      {RemainingFraction: floatPtr(0.50)},
+				"3p-5h":          {RemainingFraction: floatPtr(0.10)},
+				"3p-weekly":      {RemainingFraction: floatPtr(0.10)},
+			},
+			wantIDs: []string{"gemini-5h", "gemini-weekly", "gemini-monthly"},
+		},
+		{
+			name:  "gemini neon excludes argon-specific bucket when standard gemini exists",
+			model: &ModelInfo{DisplayName: "Gemini 4 Neon (High)"},
+			quota: map[string]QuotaBucket{
+				"gemini-5h":           {RemainingFraction: floatPtr(0.80)},
+				"gemini-weekly":       {RemainingFraction: floatPtr(0.60)},
+				"gemini-argon-weekly": {RemainingFraction: floatPtr(0.40)},
+				"3p-5h":               {RemainingFraction: floatPtr(0.20)},
+			},
+			wantIDs: []string{"gemini-5h", "gemini-weekly"},
+		},
+		{
+			name:  "gemini argon matches gemini and argon-specific buckets",
+			model: &ModelInfo{DisplayName: "Gemini 4 Argon (Medium)"},
+			quota: map[string]QuotaBucket{
+				"gemini-5h":           {RemainingFraction: floatPtr(0.80)},
+				"gemini-argon-weekly": {RemainingFraction: floatPtr(0.40)},
+				"3p-5h":               {RemainingFraction: floatPtr(0.20)},
+			},
+			wantIDs: []string{"gemini-5h", "gemini-argon-weekly"},
+		},
+		{
+			name:  "claude sonnet selects 3p series over gemini",
+			model: &ModelInfo{DisplayName: "Claude Sonnet 4.6"},
+			quota: map[string]QuotaBucket{
+				"gemini-5h":     {RemainingFraction: floatPtr(0.80)},
+				"gemini-weekly": {RemainingFraction: floatPtr(0.60)},
+				"3p-5h":         {RemainingFraction: floatPtr(0.20)},
+				"3p-weekly":     {RemainingFraction: floatPtr(0.10)},
+			},
+			wantIDs: []string{"3p-5h", "3p-weekly"},
+		},
+		{
+			name:  "claude sonnet matches shared claude-gpt pool",
+			model: &ModelInfo{DisplayName: "Claude Sonnet 4.6"},
+			quota: map[string]QuotaBucket{
+				"gemini-5h":         {RemainingFraction: floatPtr(0.80)},
+				"claude-gpt-5h":     {RemainingFraction: floatPtr(0.50)},
+				"claude-gpt-weekly": {RemainingFraction: floatPtr(0.40)},
+			},
+			wantIDs: []string{"claude-gpt-5h", "claude-gpt-weekly"},
+		},
+		{
+			name:  "gpt model matches shared claude-gpt pool and excludes gemini",
+			model: &ModelInfo{DisplayName: "GPT-5"},
+			quota: map[string]QuotaBucket{
+				"gemini-5h":         {RemainingFraction: floatPtr(0.80)},
+				"claude-gpt-5h":     {RemainingFraction: floatPtr(0.50)},
+				"claude-gpt-weekly": {RemainingFraction: floatPtr(0.40)},
+			},
+			wantIDs: []string{"claude-gpt-5h", "claude-gpt-weekly"},
+		},
+		{
+			name:  "gemini neon hides unrelated 3p buckets when no gemini bucket exists",
+			model: &ModelInfo{DisplayName: "Gemini 4 Neon"},
+			quota: map[string]QuotaBucket{
+				"3p-5h":     {RemainingFraction: floatPtr(0.20)},
+				"3p-weekly": {RemainingFraction: floatPtr(0.10)},
+			},
+			wantIDs: nil,
+		},
+		{
+			name:  "generic buckets kept alongside matching model buckets",
+			model: &ModelInfo{DisplayName: "Gemini 3 Pro"},
+			quota: map[string]QuotaBucket{
+				"rolling_5h":    {RemainingFraction: floatPtr(0.80)},
+				"gemini-weekly": {RemainingFraction: floatPtr(0.60)},
+				"claude-weekly": {RemainingFraction: floatPtr(0.20)},
+			},
+			wantIDs: []string{"rolling_5h", "gemini-weekly"},
+		},
+		{
+			name:  "nil model keeps all active quotas",
+			model: nil,
+			quota: map[string]QuotaBucket{
+				"gemini-5h": {RemainingFraction: floatPtr(0.80)},
+				"3p-5h":     {RemainingFraction: floatPtr(0.20)},
+			},
+			wantIDs: []string{"3p-5h", "gemini-5h"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Payload{Model: tc.model, Quota: tc.quota}
+			got := p.ModelQuotas()
+			if len(got) != len(tc.wantIDs) {
+				t.Fatalf("ModelQuotas() len = %d, want %d (%v)", len(got), len(tc.wantIDs), got)
+			}
+			for i, wantID := range tc.wantIDs {
+				if got[i].ID != wantID {
+					t.Fatalf("ModelQuotas()[%d].ID = %q, want %q (all=%v)", i, got[i].ID, wantID, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRenderModelSeriesQuotaFilter(t *testing.T) {
+	p := Payload{
+		Workspace: &WorkspaceInfo{CurrentDir: "/code/app"},
+		Model: &ModelInfo{
+			ID:          "Gemini 4 Neon (High)",
+			DisplayName: "Gemini 4 Neon (High)",
+			Effort:      "high",
+		},
+		ContextWindow: &ContextWindowInfo{UsedPercentage: floatPtr(25)},
+		Quota: map[string]QuotaBucket{
+			"gemini-5h": {
+				RemainingFraction: floatPtr(0.80),
+				ResetInSeconds:    int64Ptr(7200),
+			},
+			"gemini-weekly": {
+				RemainingFraction: floatPtr(0.60),
+				ResetInSeconds:    int64Ptr(172800),
+			},
+			"3p-5h": {
+				RemainingFraction: floatPtr(0.10),
+				ResetInSeconds:    int64Ptr(3600),
+			},
+			"3p-weekly": {
+				RemainingFraction: floatPtr(0.20),
+				ResetInSeconds:    int64Ptr(86400),
+			},
+		},
+	}
+
+	t.Run("default renders only current model series with short labels", func(t *testing.T) {
+		got := Render(p, Options{Width: 160, NoColor: true})
+		for _, want := range []string{"5h █▒······ 20% (2h)", "7d ███····· 40% (2d)"} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("Render() = %q, missing %q", got, want)
+			}
+		}
+		for _, omit := range []string{"90%", "80%", "3p-5h", "3p-weekly"} {
+			if strings.Contains(got, omit) {
+				t.Fatalf("Render() = %q, should not contain %q", got, omit)
+			}
+		}
+	})
+
+	t.Run("all-quotas renders all series and disambiguates colliding labels", func(t *testing.T) {
+		got := Render(p, Options{Width: 220, NoColor: true, AllQuotas: true})
+		for _, want := range []string{
+			"3p-5h ███████· 90% (1h)",
+			"gemini-5h █▒······ 20% (2h)",
+			"3p-weekly ██████░· 80% (1d)",
+			"gemini-weekly ███····· 40% (2d)",
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("Render(AllQuotas:true) = %q, missing %q", got, want)
+			}
+		}
+	})
+}
